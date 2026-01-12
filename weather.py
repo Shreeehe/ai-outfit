@@ -5,7 +5,7 @@ class WeatherService:
     def __init__(self):
         # Free API key from OpenWeatherMap
         # Sign up at: https://openweathermap.org/api
-        self.API_KEY = "ef785c660c0f2875d4b30d8eb775fb0c"  # Replace this!
+        self.API_KEY = ""  # Replace this!
         self.base_url = "http://api.openweathermap.org/data/2.5/weather"
     
     def get_weather(self, city="Tiruppur"):
