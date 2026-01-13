@@ -51,27 +51,27 @@ class OutfitRecommender:
     def _get_all_clothes(self):
         """Fetch all clothes from database (excluding items in laundry)"""
         conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row  # Use Row for dict-like access
         c = conn.cursor()
         
         # Exclude items that are in laundry
         c.execute('SELECT * FROM clothes WHERE in_laundry = 0 OR in_laundry IS NULL')
-        clothes = c.fetchall()
+        rows = c.fetchall()
         conn.close()
         
-        # Convert to list of dicts for easier handling
+        # Convert to list of dicts with proper column names
         clothes_list = []
-        for item in clothes:
+        for row in rows:
             clothes_list.append({
-                'id': item[0],
-                'image_path': item[1],
-                'type': item[2],
-                'color_primary': item[3],
-                'color_secondary': item[4],
-                'pattern': item[5],
-                'formality': item[6],
-                'season': item[7],
-                'created_at': item[8],
-                'times_worn': item[9] if len(item) > 9 else 0
+                'id': row['id'],
+                'image_path': row['image_path'],
+                'type': row['clothing_type'],
+                'color_primary': row['color_primary'],
+                'color_secondary': row['color_secondary'],
+                'pattern': row['pattern'] or 'solid',
+                'formality': row['formality'] or 'casual',
+                'season': row['season_weight'] or 'medium',
+                'times_worn': row['times_worn'] or 0
             })
         
         return clothes_list
