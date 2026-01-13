@@ -1,13 +1,20 @@
-# classifier.py (IMPROVED VERSION)
+# classifier.py - Clothing Classifier using TinyCLIP (Lightweight)
+"""
+Uses TinyCLIP for faster, smaller model (~50MB vs 350MB for CLIP)
+Suitable for cloud deployment and mobile devices
+"""
+
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 import torch
 
 class ClothingClassifier:
     def __init__(self):
-        print("Loading CLIP model...")
-        self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        print("Loading TinyCLIP model (lightweight)...")
+        # TinyCLIP - much smaller than regular CLIP
+        model_name = "wkcn/TinyCLIP-ViT-39M-16-Text-19M-YFCC15M"
+        self.model = CLIPModel.from_pretrained(model_name)
+        self.processor = CLIPProcessor.from_pretrained(model_name)
         
         self.clothing_types = [
             "t-shirt", "shirt", "blouse", "sweater", "hoodie",
@@ -38,21 +45,18 @@ class ClothingClassifier:
             "heavy winter clothing": "heavy"
         }
     
-    def is_clothing(self, image_path, threshold=0.6):
+    def is_clothing(self, image_path, threshold=0.5):
         """
         First check: Is this actually clothing?
         Returns: (is_clothing: bool, confidence: float, detected_category: str)
         """
         image = Image.open(image_path).convert('RGB')
         
-        # Compare against clothing vs non-clothing
         labels = [
             "a photo of clothing",
             "a photo of a person wearing clothes",
             "a photo of an object",
-            "a photo of a vehicle",
             "a photo of furniture",
-            "a photo of electronics",
             "a photo of food",
             "a photo of an animal"
         ]
@@ -68,18 +72,15 @@ class ClothingClassifier:
             outputs = self.model(**inputs)
             probs = outputs.logits_per_image.softmax(dim=1)[0]
         
-        # Get top 2 predictions
-        top2_probs, top2_indices = torch.topk(probs, 2)
+        best_idx = probs.argmax().item()
+        best_conf = probs[best_idx].item()
+        best_label = labels[best_idx]
         
-        best_label = labels[top2_indices[0].item()]
-        best_conf = top2_probs[0].item()
-        
-        # Check if top prediction is clothing-related
-        is_clothing_item = "clothing" in best_label or "clothes" in best_label
+        is_clothing_item = best_idx in [0, 1]
         
         return is_clothing_item, best_conf, best_label
     
-    def classify_full(self, image_path, min_confidence=0.5):
+    def classify_full(self, image_path, min_confidence=0.3):
         """
         Full classification with validation
         Returns: dict with results or error
@@ -95,37 +96,20 @@ class ClothingClassifier:
                 'confidence': clothing_conf
             }
         
-        if clothing_conf < 0.5:
-            return {
-                'success': False,
-                'error': 'low_confidence',
-                'message': f'Not sure if this is clothing (only {clothing_conf*100:.0f}% confident)',
-                'confidence': clothing_conf
-            }
-        
         # STEP 2: Classify clothing details
         image = Image.open(image_path).convert('RGB')
         
         # Get clothing type
         clothing_type, type_conf = self._classify(image, self.clothing_types)
         
-        # If clothing type confidence is too low, reject
-        if type_conf < min_confidence:
-            return {
-                'success': False,
-                'error': 'unclear_type',
-                'message': f'Image is unclear. Best guess: {clothing_type} (only {type_conf*100:.0f}% confident)',
-                'confidence': type_conf
-            }
-        
         # Get other attributes
-        formality, form_conf = self._classify(image, list(self.formality_levels.keys()))
+        formality, _ = self._classify(image, list(self.formality_levels.keys()))
         formality = self.formality_levels[formality]
         
-        pattern, patt_conf = self._classify(image, list(self.patterns.keys()))
+        pattern, _ = self._classify(image, list(self.patterns.keys()))
         pattern = self.patterns[pattern]
         
-        season, seas_conf = self._classify(image, list(self.seasons.keys()))
+        season, _ = self._classify(image, list(self.seasons.keys()))
         season = self.seasons[season]
         
         # Extract colors
@@ -144,8 +128,10 @@ class ClothingClassifier:
     
     def _classify(self, image, labels):
         """Helper to classify against a list of labels"""
+        text_labels = [f"a photo of {label}" for label in labels]
+        
         inputs = self.processor(
-            text=labels,
+            text=text_labels,
             images=image,
             return_tensors="pt",
             padding=True
@@ -161,7 +147,7 @@ class ClothingClassifier:
         return labels[best_idx], confidence
     
     def _extract_colors(self, image_path):
-        """Extract dominant colors"""
+        """Extract dominant colors using K-means"""
         from sklearn.cluster import KMeans
         import numpy as np
         
@@ -169,6 +155,10 @@ class ClothingClassifier:
         image = image.resize((100, 100))
         
         pixels = np.array(image).reshape(-1, 3)
+        
+        # Filter out very dark/light pixels
+        mask = (pixels.sum(axis=1) > 30) & (pixels.sum(axis=1) < 730)
+        pixels = pixels[mask] if mask.sum() > 10 else pixels
         
         kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
         kmeans.fit(pixels)

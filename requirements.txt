@@ -1,13 +1,7 @@
-# Core
-streamlit>=1.30.0
-pillow>=10.0.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-
-# AI/ML
-torch>=2.0.0
-transformers>=4.35.0
-scikit-learn>=1.3.0
-
-# Database
-# SQLite is built-in with Python
+streamlit==1.30.0
+pillow==10.0.0
+requests==2.31.0
+python-dotenv==1.0.0
+torch==2.1.0
+transformers==4.35.0
+scikit-learn==1.3.0
