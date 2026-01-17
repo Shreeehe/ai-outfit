@@ -2,33 +2,18 @@
 import requests
 import os
 
-def get_secret(key, default=None):
-    """Get secret from Streamlit secrets or environment"""
-    try:
-        import streamlit as st
-        # Try Streamlit secrets first (for cloud deployment)
-        if hasattr(st, 'secrets'):
-            if 'api_keys' in st.secrets and key in st.secrets['api_keys']:
-                return st.secrets['api_keys'][key]
-            if 'settings' in st.secrets and key in st.secrets['settings']:
-                return st.secrets['settings'][key]
-    except:
-        pass
-    
-    # Fall back to environment variables
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    
-    return os.getenv(key, default)
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, use os.environ directly
 
 class WeatherService:
     def __init__(self):
-        # Get API key from Streamlit secrets or environment
-        self.API_KEY = get_secret('OPENWEATHER_API_KEY', 'ef785c660c0f2875d4b30d8eb775fb0c')
-        self.default_city = get_secret('DEFAULT_CITY', 'Theni')
+        # Get API key from environment or use default
+        self.API_KEY = os.getenv('OPENWEATHER_API_KEY', 'ef785c660c0f2875d4b30d8eb775fb0c')
+        self.default_city = os.getenv('DEFAULT_CITY', 'Theni')
         self.base_url = "http://api.openweathermap.org/data/2.5/weather"
     
     def get_weather(self, city=None):
@@ -46,16 +31,16 @@ class WeatherService:
                 'units': 'metric'  # Celsius
             }
             
-            response = requests.get(self.base_url, params=params, timeout=5)
+            response = requests.get(self.base_url, params=params)
             data = response.json()
             
             if response.status_code == 200:
                 return {
-                    'temp': round(data['main']['temp']),
+                    'temp': data['main']['temp'],
                     'condition': data['weather'][0]['main'],
                     'description': data['weather'][0]['description'],
                     'humidity': data['main']['humidity'],
-                    'feels_like': round(data['main']['feels_like']),
+                    'feels_like': data['main']['feels_like'],
                     'icon': data['weather'][0]['icon'],
                     'city': city
                 }
@@ -88,7 +73,6 @@ class WeatherService:
             'Thunderstorm': '⛈️',
             'Snow': '❄️',
             'Mist': '🌫️',
-            'Fog': '🌫️',
-            'Haze': '🌫️'
+            'Fog': '🌫️'
         }
         return emoji_map.get(condition, '🌤️')

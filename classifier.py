@@ -1,36 +1,25 @@
-# classifier.py - Clothing Classifier (Cloud-Compatible with Fallback)
-"""
-Uses TinyCLIP when available, falls back to manual mode on cloud
-"""
-
+# classifier.py - Fast CLIP-based Clothing Classifier
+import torch
+from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
-
-# Try to import transformers - may fail on Python 3.13
-CLIP_AVAILABLE = False
-try:
-    from transformers import CLIPProcessor, CLIPModel
-    import torch
-    CLIP_AVAILABLE = True
-except Exception as e:
-    print(f"⚠️ CLIP not available: {e}")
-    print("Running in MANUAL mode - no AI classification")
+from sklearn.cluster import KMeans
+import numpy as np
 
 class ClothingClassifier:
-    def __init__(self):
-        self.ai_enabled = False
+    def __init__(self, use_gpu=True):
+        print("Loading CLIP model...")
         
-        if CLIP_AVAILABLE:
-            try:
-                print("Loading TinyCLIP model...")
-                model_name = "wkcn/TinyCLIP-ViT-39M-16-Text-19M-YFCC15M"
-                self.model = CLIPModel.from_pretrained(model_name)
-                self.processor = CLIPProcessor.from_pretrained(model_name)
-                self.ai_enabled = True
-                print("✅ AI classification enabled")
-            except Exception as e:
-                print(f"⚠️ Failed to load model: {e}")
-        else:
-            print("📝 Manual classification mode")
+        # Use GPU if available
+        self.device = "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
+        print(f"Using device: {self.device}")
+        
+        self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(self.device)
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        
+        # Set to eval mode for faster inference
+        self.model.eval()
+        
+        print("CLIP model loaded!")
         
         self.clothing_types = [
             "t-shirt", "shirt", "blouse", "sweater", "hoodie",
@@ -61,59 +50,52 @@ class ClothingClassifier:
             "heavy winter clothing": "heavy"
         }
     
-    def classify_full(self, image_path, min_confidence=0.3):
-        """
-        Full classification - uses AI if available, otherwise returns defaults
-        """
-        if not self.ai_enabled:
-            # Return default values for manual correction
-            colors = self._extract_colors(image_path)
-            return {
-                'success': True,
-                'ai_enabled': False,
-                'clothing_type': 'top',  # Default
-                'type_confidence': 0,
-                'formality': 'casual',
-                'pattern': 'solid',
-                'season': 'medium',
-                'color_primary': colors[0],
-                'color_secondary': colors[1] if len(colors) > 1 else colors[0],
-                'message': 'AI not available - please select type manually'
-            }
-        
-        # AI classification
+    def _resize_image(self, image, max_size=512):
+        """Resize image for faster processing"""
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.LANCZOS)
+        return image
+    
+    def classify_full(self, image_path):
+        """Full classification with validation"""
         try:
-            # Check if it's clothing
-            is_clothing, clothing_conf, detected = self.is_clothing(image_path)
-            
-            if not is_clothing:
-                return {
-                    'success': False,
-                    'ai_enabled': True,
-                    'error': 'not_clothing',
-                    'message': f'This looks like {detected}, not clothing!',
-                    'confidence': clothing_conf
-                }
-            
-            # Classify clothing details
+            # Load and resize image for speed
             image = Image.open(image_path).convert('RGB')
+            image = self._resize_image(image, max_size=384)  # Smaller = faster
             
-            clothing_type, type_conf = self._classify(image, self.clothing_types)
+            # Quick clothing detection + type classification in one pass
+            with torch.no_grad():
+                # Classify clothing type
+                clothing_type, type_conf = self._classify(image, self.clothing_types)
+                
+                # If very low confidence, might not be clothing
+                if type_conf < 0.15:
+                    return {
+                        'success': False,
+                        'error': 'not_clothing',
+                        'message': 'Could not detect clothing in image',
+                        'confidence': type_conf
+                    }
+                
+                # Get other attributes in parallel-ish (still sequential but fast)
+                formality, _ = self._classify(image, list(self.formality_levels.keys()))
+                formality = self.formality_levels[formality]
+                
+                pattern, _ = self._classify(image, list(self.patterns.keys()))
+                pattern = self.patterns[pattern]
+                
+                season, _ = self._classify(image, list(self.seasons.keys()))
+                season = self.seasons[season]
             
-            formality, _ = self._classify(image, list(self.formality_levels.keys()))
-            formality = self.formality_levels[formality]
+            # Extract colors (fast, no GPU needed)
+            colors = self._extract_colors(image)
             
-            pattern, _ = self._classify(image, list(self.patterns.keys()))
-            pattern = self.patterns[pattern]
-            
-            season, _ = self._classify(image, list(self.seasons.keys()))
-            season = self.seasons[season]
-            
-            colors = self._extract_colors(image_path)
+            print(f"Detected: {clothing_type} ({type_conf:.2f})")
             
             return {
                 'success': True,
-                'ai_enabled': True,
                 'clothing_type': clothing_type,
                 'type_confidence': type_conf,
                 'formality': formality,
@@ -122,57 +104,20 @@ class ClothingClassifier:
                 'color_primary': colors[0],
                 'color_secondary': colors[1] if len(colors) > 1 else colors[0]
             }
+            
         except Exception as e:
-            colors = self._extract_colors(image_path)
+            print(f"Classification error: {e}")
+            import traceback
+            traceback.print_exc()
             return {
-                'success': True,
-                'ai_enabled': False,
-                'clothing_type': 'top',
-                'formality': 'casual',
-                'pattern': 'solid',
-                'season': 'medium',
-                'color_primary': colors[0],
-                'color_secondary': colors[1] if len(colors) > 1 else colors[0],
-                'message': f'AI error: {e} - please select type manually'
+                'success': False,
+                'error': 'classification_error',
+                'message': str(e),
+                'confidence': 0
             }
     
-    def is_clothing(self, image_path, threshold=0.5):
-        """Check if image contains clothing"""
-        if not self.ai_enabled:
-            return True, 1.0, "clothing"
-            
-        image = Image.open(image_path).convert('RGB')
-        
-        labels = [
-            "a photo of clothing",
-            "a photo of a person wearing clothes",
-            "a photo of an object",
-            "a photo of furniture",
-            "a photo of food",
-            "a photo of an animal"
-        ]
-        
-        inputs = self.processor(
-            text=labels,
-            images=image,
-            return_tensors="pt",
-            padding=True
-        )
-        
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            probs = outputs.logits_per_image.softmax(dim=1)[0]
-        
-        best_idx = probs.argmax().item()
-        best_conf = probs[best_idx].item()
-        best_label = labels[best_idx]
-        
-        is_clothing_item = best_idx in [0, 1]
-        
-        return is_clothing_item, best_conf, best_label
-    
     def _classify(self, image, labels):
-        """Helper to classify against a list of labels"""
+        """Classify image against a list of labels - GPU accelerated"""
         text_labels = [f"a photo of {label}" for label in labels]
         
         inputs = self.processor(
@@ -181,6 +126,9 @@ class ClothingClassifier:
             return_tensors="pt",
             padding=True
         )
+        
+        # Move to GPU
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -191,27 +139,29 @@ class ClothingClassifier:
         
         return labels[best_idx], confidence
     
-    def _extract_colors(self, image_path):
-        """Extract dominant colors using K-means"""
-        try:
-            from sklearn.cluster import KMeans
-            import numpy as np
-            
-            image = Image.open(image_path).convert('RGB')
-            image = image.resize((100, 100))
-            
-            pixels = np.array(image).reshape(-1, 3)
-            
-            mask = (pixels.sum(axis=1) > 30) & (pixels.sum(axis=1) < 730)
-            pixels = pixels[mask] if mask.sum() > 10 else pixels
-            
-            kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
-            kmeans.fit(pixels)
-            
-            colors = kmeans.cluster_centers_.astype(int)
-            hex_colors = ['#{:02x}{:02x}{:02x}'.format(r, g, b) 
-                         for r, g, b in colors]
-            
-            return hex_colors
-        except Exception:
-            return ['#000000', '#ffffff']
+    def _extract_colors(self, image):
+        """Extract dominant colors using K-means - CPU is fine"""
+        # Resize for speed
+        small_img = image.resize((50, 50))
+        pixels = np.array(small_img).reshape(-1, 3)
+        
+        # Filter out very light and very dark pixels
+        mask = (pixels.sum(axis=1) > 30) & (pixels.sum(axis=1) < 730)
+        filtered_pixels = pixels[mask]
+        
+        if len(filtered_pixels) < 2:
+            return ['#808080', '#808080']
+        
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+        kmeans.fit(filtered_pixels)
+        
+        colors = kmeans.cluster_centers_.astype(int)
+        hex_colors = ['#{:02x}{:02x}{:02x}'.format(r, g, b) for r, g, b in colors]
+        
+        return hex_colors
+
+
+# Test
+if __name__ == "__main__":
+    classifier = ClothingClassifier()
+    print("Classifier ready for testing!")
